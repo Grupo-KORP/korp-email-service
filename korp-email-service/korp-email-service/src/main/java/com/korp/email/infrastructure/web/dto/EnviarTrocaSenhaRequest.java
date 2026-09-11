@@ -1,0 +1,11 @@
+package com.korp.email.infrastructure.web.dto;
+
+import jakarta.validation.constraints.Email;
+import jakarta.validation.constraints.NotBlank;
+
+public record EnviarTrocaSenhaRequest(
+        @NotBlank String nome,
+        @NotBlank @Email String email,
+        @NotBlank String urlRedefinicao
+) {
+}
