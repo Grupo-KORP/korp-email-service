@@ -17,10 +17,8 @@ import org.springframework.web.bind.annotation.*;
 
 /**
  * Endpoints consumidos pelo serviço principal KORP via OpenFeign.
- * Toda a mecânica de envio é assíncrona: aqui só criamos o pedido
- * (EmailLog PENDENTE) e respondemos 202 Accepted na hora — quem
- * quiser saber se o envio deu certo consulta pelo emailLogId depois
- * (endpoint de consulta fica como próximo passo, se você quiser).
+ * O pedido só retorna 202 Accepted depois de o RabbitMQ confirmar a
+ * publicação. O envio SMTP acontece no consumidor da fila.
  */
 @RestController
 @RequestMapping("/emails")
