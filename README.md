@@ -19,8 +19,9 @@ application/     -> orquestra o domínio, também sem depender de Spring
 infrastructure/  -> tudo que é detalhe técnico/framework
   web/             EmailController + DTOs (o que o OpenFeign do KORP chama)
   persistence/     JPA entity + Spring Data repository + adapter da porta EmailLogRepository
-  mail/            AsyncEmailDispatcherGateway (JavaMailSender, @Async) — implementa EmailDispatcherGateway
-  config/          AsyncConfig (thread pool), UseCaseConfig (transforma os usecases em beans)
+  mail/            EmailSenderService (JavaMailSender) — envia mensagens recebidas da fila
+  messaging/       RabbitEmailDispatcherGateway, RabbitEmailConsumer e contrato interno JSON da fila
+  config/          RabbitMqConfig (exchange, filas, retry e DLQ), UseCaseConfig
 ```
 
 A regra de dependência é sempre pra dentro: `infrastructure` conhece `application` e `domain`;
@@ -31,10 +32,14 @@ A regra de dependência é sempre pra dentro: `infrastructure` conhece `applicat
 1. KORP (serviço principal) chama, via Feign, um dos endpoints em `EmailController`.
 2. O controller monta um `Command` e chama o usecase correspondente.
 3. O usecase monta a `EmailMessage`, cria um `EmailLog` com status `PENDENTE` e salva (rápido, síncrono).
-4. O usecase chama `EmailDispatcherGateway.despachar(...)` e retorna na hora — o controller responde
-   **202 Accepted** com o `emailLogId`.
-5. Em background (`@Async`), `AsyncEmailDispatcherGateway` manda o e-mail de verdade via `JavaMailSender`
-   e atualiza o `EmailLog` para `ENVIADO` ou `FALHOU`.
+4. O usecase chama `EmailDispatcherGateway.despachar(...)`, que aguarda a confirmação de publicação,
+   e então o controller responde **202 Accepted** com o `emailLogId`.
+5. `RabbitEmailConsumer` recebe a mensagem persistente e `EmailSenderService` envia via `JavaMailSender`.
+   O log passa para `ENVIADO`; depois de três tentativas sem sucesso, passa para `FALHOU` e a mensagem
+   segue para a DLQ.
+
+A resposta `202 Accepted` só é enviada depois da confirmação do RabbitMQ. Se a publicação falhar, o log
+passa para `FALHOU` e a API responde `503 Service Unavailable`.
 
 ## Endpoints
 
@@ -79,10 +84,18 @@ String pdfBase64 = Base64.getEncoder().encodeToString(pdfBytes);
 
 - `DB_USERNAME`, `DB_PASSWORD` — Postgres
 - `MAIL_USERNAME`, `MAIL_PASSWORD` — conta do Gmail usada pra enviar (senha de app, não a senha normal)
+- `RABBITMQ_HOST`, `RABBITMQ_PORT`, `RABBITMQ_USERNAME`, `RABBITMQ_PASSWORD` — conexão com o broker
+- `RABBITMQ_EMAIL_EXCHANGE`, `RABBITMQ_EMAIL_QUEUE`, `RABBITMQ_EMAIL_DLX`, `RABBITMQ_EMAIL_DLQ` — nomes de topologia
+- `RABBITMQ_PUBLISHER_CONFIRM_TIMEOUT_MS` — limite de espera pela confirmação de publicação (padrão: 5000 ms)
+
+Para desenvolvimento local, o broker pode ser iniciado com `docker compose up -d` dentro de `rabbit-mq/`.
+Configure `RABBITMQ_USERNAME` e `RABBITMQ_PASSWORD` com os valores definidos no `compose.yaml` desse diretório.
+
+As mensagens persistentes contêm o corpo do e-mail e, no caso do pedido de distribuidor, o PDF em Base64.
+Proteja o acesso e as credenciais do RabbitMQ e evite inspecionar ou registrar o payload.
 
 ## Próximos passos sugeridos
 
 - Endpoint `GET /emails/{id}` pra consultar o status de um envio (útil pro KORP checar se deu certo).
-- Retry automático em caso de `FALHOU` (ex: reprocessar EmailLogs pendentes/falhos via scheduler).
 - Testes unitários dos usecases com mocks das portas (`EmailLogRepository`, `EmailDispatcherGateway`) —
   como eles não dependem de Spring, é só JUnit + Mockito puro, sem subir contexto.
